@@ -1,6 +1,6 @@
 // index.js
 
-const { Client } = require("whatsapp-web.js");
+const { Client, LocalAuth } = require("whatsapp-web.js");
 const express = require("express");
 const axios = require("axios");
 require("dotenv").config();
@@ -12,87 +12,106 @@ const port = process.env.PORT || 3000;
 // Base URL for constructing full URLs
 const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
 
-// Initialize variables
-let client;
-let isClientInitialized = false;
-let isAuthenticated = false;
-let qrCodeData = null;
-let qrCodeGeneratedAt = null;
+// List of bot IDs
+const botIds = ["bot1", "bot2", "bot3", "bot4", "bot5"];
 
-// Conversation history map
-const conversationHistory = {};
+// Map to store clients and their statuses
+const clients = {}; // botId => { client, isInitialized, isAuthenticated, qrCodeData, conversationHistory }
+
+botIds.forEach((botId) => {
+  clients[botId] = {
+    client: null,
+    isInitialized: false,
+    isAuthenticated: false,
+    qrCodeData: null,
+    qrCodeGeneratedAt: null,
+    conversationHistory: new Map(), // userId => messages array
+  };
+});
 
 // Root endpoint to show basic info
 app.get("/", (req, res) => {
   res.send(`
     <html>
       <body>
-        <h1>Welcome to the WhatsApp ChatGPT Bot</h1>
-        <p>This bot integrates WhatsApp with OpenAI's GPT-3.5-turbo model.</p>
-        <p>To authenticate, please navigate to <a href="/qr">${baseUrl}/qr</a> to scan the QR code with your WhatsApp app.</p>
+        <h1>Welcome to the WhatsApp ChatGPT Bots</h1>
+        <p>Select a bot to authenticate:</p>
+        <ul>
+          ${botIds
+            .map((botId) => `<li><a href="/${botId}">${botId}</a></li>`)
+            .join("")}
+        </ul>
       </body>
     </html>
   `);
 });
 
-// Endpoint to get QR code
-app.get("/qr", async (req, res) => {
-  console.log(`[${new Date().toISOString()}] /qr endpoint was accessed`);
-
-  if (isAuthenticated) {
+// Endpoint for each bot
+botIds.forEach((botId) => {
+  app.get(`/${botId}`, async (req, res) => {
     console.log(
-      `[${new Date().toISOString()}] Client is already authenticated`
+      `[${new Date().toISOString()}] /${botId} endpoint was accessed`
     );
-    res.send(`
-      <html>
-        <body>
-          <h1>WhatsApp Client is Already Authenticated</h1>
-          <p>Your WhatsApp client is already connected and ready to receive messages.</p>
-        </body>
-      </html>
-    `);
-    return;
-  }
 
-  if (!isClientInitialized) {
-    console.log(
-      `[${new Date().toISOString()}] Initializing WhatsApp client...`
-    );
-    initializeWhatsAppClient();
-  }
+    const bot = clients[botId];
 
-  // Wait for QR code to be generated
-  const startTime = Date.now();
-  while (!qrCodeData && Date.now() - startTime < 30000) {
-    // Wait up to 30 seconds
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
+    if (bot.isAuthenticated) {
+      console.log(
+        `[${new Date().toISOString()}] ${botId} is already authenticated`
+      );
+      res.send(`
+        <html>
+          <body>
+            <h1>${botId} is already authenticated</h1>
+            <p>Your WhatsApp client is already connected and ready to receive messages.</p>
+          </body>
+        </html>
+      `);
+      return;
+    }
 
-  if (qrCodeData) {
-    const qrCodeImageUrl = await qrcode.toDataURL(qrCodeData);
-    console.log(`[${new Date().toISOString()}] Serving QR code to client`);
-    res.send(`
-      <html>
-        <body>
-          <h1>Scan the QR Code with your WhatsApp</h1>
-          <img src="${qrCodeImageUrl}" alt="QR Code" />
-          <p>QR code generated at: ${qrCodeGeneratedAt}</p>
-        </body>
-      </html>
-    `);
-  } else {
-    console.error(
-      `[${new Date().toISOString()}] QR code was not generated in time`
-    );
-    res.send(`
-      <html>
-        <body>
-          <h1>QR Code Not Available</h1>
-          <p>Sorry, the QR code could not be generated at this time. Please try again later.</p>
-        </body>
-      </html>
-    `);
-  }
+    if (!bot.isInitialized) {
+      console.log(
+        `[${new Date().toISOString()}] Initializing ${botId} client...`
+      );
+      initializeBotClient(botId);
+    }
+
+    // Wait for QR code to be generated
+    const startTime = Date.now();
+    while (!bot.qrCodeData && Date.now() - startTime < 30000) {
+      // Wait up to 30 seconds
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    if (bot.qrCodeData) {
+      const qrCodeImageUrl = await qrcode.toDataURL(bot.qrCodeData);
+      console.log(
+        `[${new Date().toISOString()}] Serving QR code for ${botId} to client`
+      );
+      res.send(`
+        <html>
+          <body>
+            <h1>Scan the QR Code for ${botId}</h1>
+            <img src="${qrCodeImageUrl}" alt="QR Code" />
+            <p>QR code generated at: ${bot.qrCodeGeneratedAt}</p>
+          </body>
+        </html>
+      `);
+    } else {
+      console.error(
+        `[${new Date().toISOString()}] QR code was not generated in time for ${botId}`
+      );
+      res.send(`
+        <html>
+          <body>
+            <h1>QR Code Not Available for ${botId}</h1>
+            <p>Sorry, the QR code could not be generated at this time. Please try again later.</p>
+          </body>
+        </html>
+      `);
+    }
+  });
 });
 
 // Start the Express server
@@ -102,52 +121,64 @@ app.listen(port, () => {
   );
 });
 
-// Function to initialize WhatsApp client
-function initializeWhatsAppClient() {
-  client = new Client();
-  isClientInitialized = true;
-
-  client.on("qr", (qr) => {
-    qrCodeData = qr;
-    qrCodeGeneratedAt = new Date().toISOString();
-    console.log(`[${qrCodeGeneratedAt}] QR code generated`);
+// Function to initialize a bot client
+function initializeBotClient(botId) {
+  const bot = clients[botId];
+  bot.client = new Client({
+    authStrategy: new LocalAuth({ clientId: botId }),
+    puppeteer: {
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    },
   });
 
-  client.on("authenticated", () => {
-    isAuthenticated = true;
-    qrCodeData = null;
-    console.log(`[${new Date().toISOString()}] Authenticated successfully`);
+  bot.isInitialized = true;
+
+  bot.client.on("qr", (qr) => {
+    bot.qrCodeData = qr;
+    bot.qrCodeGeneratedAt = new Date().toISOString();
+    console.log(`[${bot.qrCodeGeneratedAt}] QR code generated for ${botId}`);
   });
 
-  client.on("auth_failure", (msg) => {
-    isAuthenticated = false;
-    console.error(
-      `[${new Date().toISOString()}] Authentication failure: ${msg}`
-    );
-  });
-
-  client.on("ready", () => {
-    console.log(`[${new Date().toISOString()}] WhatsApp client is ready`);
-  });
-
-  client.on("disconnected", (reason) => {
-    isAuthenticated = false;
-    isClientInitialized = false;
-    qrCodeData = null;
+  bot.client.on("authenticated", () => {
+    bot.isAuthenticated = true;
+    bot.qrCodeData = null;
     console.log(
-      `[${new Date().toISOString()}] Client was logged out: ${reason}`
+      `[${new Date().toISOString()}] ${botId} authenticated successfully`
     );
+  });
+
+  bot.client.on("auth_failure", (msg) => {
+    bot.isAuthenticated = false;
+    console.error(
+      `[${new Date().toISOString()}] Authentication failure for ${botId}: ${msg}`
+    );
+  });
+
+  bot.client.on("ready", () => {
+    console.log(`[${new Date().toISOString()}] ${botId} client is ready`);
+  });
+
+  bot.client.on("disconnected", (reason) => {
+    bot.isAuthenticated = false;
+    bot.isInitialized = false;
+    bot.qrCodeData = null;
+    console.log(
+      `[${new Date().toISOString()}] ${botId} client was logged out: ${reason}`
+    );
+    // Re-initialize the client
+    initializeBotClient(botId);
   });
 
   // Message handler
-  client.on("message", async (message) => {
+  bot.client.on("message", async (message) => {
     console.log(
-      `[${new Date().toISOString()}] Received message from ${message.from}: ${
-        message.body
-      }`
+      `[${new Date().toISOString()}] [${botId}] Received message from ${
+        message.from
+      }: ${message.body}`
     );
 
     const userId = message.from;
+    const conversationHistory = bot.conversationHistory;
 
     if (message.body.startsWith("!")) {
       const userInput = message.body.slice(1).trim();
@@ -176,8 +207,8 @@ function initializeWhatsAppClient() {
           break;
 
         case "reset":
-          // Reset conversation history
-          conversationHistory[userId] = [];
+          // Reset conversation history for this user
+          conversationHistory.set(userId, []);
           await message.reply("Conversation history has been reset.");
           break;
 
@@ -188,25 +219,26 @@ function initializeWhatsAppClient() {
       }
     } else {
       // Handle conversation messages
-      const userInput = message.body;
 
       // Initialize conversation history for new users
-      if (!conversationHistory[userId]) {
-        conversationHistory[userId] = [];
+      if (!conversationHistory.has(userId)) {
+        conversationHistory.set(userId, []);
       }
 
+      const conversation = conversationHistory.get(userId);
+
       // Add user's message to conversation history
-      conversationHistory[userId].push({ role: "user", content: userInput });
+      conversation.push({ role: "user", content: message.body });
 
       try {
-        const reply = await getChatGPTReply(conversationHistory[userId]);
+        const reply = await getChatGPTReply(conversation);
         await message.reply(reply);
 
         // Add assistant's reply to conversation history
-        conversationHistory[userId].push({ role: "assistant", content: reply });
+        conversation.push({ role: "assistant", content: reply });
       } catch (error) {
         console.error(
-          `[${new Date().toISOString()}] Error with OpenAI API:`,
+          `[${new Date().toISOString()}] Error with OpenAI API for ${botId}:`,
           error.response ? error.response.data : error.message
         );
         await message.reply(
@@ -216,7 +248,7 @@ function initializeWhatsAppClient() {
     }
   });
 
-  client.initialize();
+  bot.client.initialize();
 }
 
 // Function to call OpenAI Chat Completion API
